@@ -7,6 +7,7 @@ from model import QNetwork, Dual_QNetwork
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from  data_process.action import get_action
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -37,10 +38,10 @@ class Agent():
         self.gamma = gamma
         self.tau = tau
 
-    def step(self, state, action, reward, next_state, done):
+    def step(self, state, action, reward, next_state):
         # Save experience in replay memory
-        self.memory.add(state, action, reward, next_state, done)
-
+        self.memory.add(state, action, reward, next_state)
+        print("当前缓冲池数量{}".format(len(self.memory)))
         # Learn every UPDATE_EVERY time steps.
         self.t_step = (self.t_step + 1) % self.update_step
         if self.t_step == 0:
@@ -49,29 +50,36 @@ class Agent():
                 experiences = self.memory.sample()
                 self.learn(experiences, self.gamma)
 
-    def act(self, state, eps=0.):
-        state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+    def act(self, state_actions,eps):
+        state_actions = torch.from_numpy(state_actions).float().to(device)
         self.qnetwork_local.eval()
         with torch.no_grad():
-            action_values = self.qnetwork_local(state)
+            action_values = self.qnetwork_local(state_actions)
         self.qnetwork_local.train()
 
-        # Epsilon-greedy action selection
+        # Epsilon-greedy action.py selection
         if random.random() > eps:
             return np.argmax(action_values.cpu().data.numpy())
         else:
-            return random.choice(np.arange(self.action_size))
+            return random.choice(np.arange(state_actions.shape[0]))
 
     def learn(self, experiences, gamma):
-        states, actions, rewards, next_states, dones = experiences
+        states, actions, rewards, next_states = experiences
 
         # Get max predicted Q values (for next states) from target model
-        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+            # 计算下一个状态获取的action集合
+        next_states_actions =torch.tensor( [ torch.from_numpy(get_action(i[0],i[1],i[2]).values) for i in next_states.cpu().data.numpy()]).cuda().float()
+
+
+        Q_targets_next = self.qnetwork_target(next_states_actions).detach().max(1)[0].unsqueeze(1)
+
         # Compute Q targets for current states
-        Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
+        #               Q   现实
+        Q_targets = rewards + (gamma * Q_targets_next )
 
         # Get expected Q values from local model
-        Q_expected = self.qnetwork_local(states).gather(1, actions)
+        states_action = np.hstack(states,actions)
+        Q_expected = self.qnetwork_local(states_action)
 
         # Compute loss
         loss = F.mse_loss(Q_expected, Q_targets)
@@ -93,11 +101,11 @@ class ReplayBuffer:
         self.action_size = action_size
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+        self.experience = namedtuple("Experience", field_names=["state", "action.py", "reward", "next_state"])
         self.seed = random.seed(seed)
 
-    def add(self, state, action, reward, next_state, done):
-        e = self.experience(state, action, reward, next_state, done)
+    def add(self, state, action, reward, next_state):
+        e = self.experience(state, action, reward, next_state)
         self.memory.append(e)
 
     def sample(self):
@@ -108,9 +116,8 @@ class ReplayBuffer:
         rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
         next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(
             device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(
-            device)
-        return (states, actions, rewards, next_states, dones)
+
+        return (states, actions, rewards, next_states)
 
     def __len__(self):
         return len(self.memory)
